@@ -4,7 +4,7 @@
 //
 // author: Rossen Popov, 2015-2016
 
-function vdf_decode($text) {
+function vdf_decode($text, $load_base_files = false) {
     if(!is_string($text)) {
         trigger_error("vdf_decode expects parameter 1 to be a string, " . gettype($text) . " given.", E_USER_NOTICE);
         return NULL;
@@ -21,9 +21,11 @@ function vdf_decode($text) {
 
     $lines = preg_split('/\n/', $text);
 
+    $base_arr = array();
     $arr = array();
     $stack = array(0=>&$arr);
     $expect_bracket = false;
+    $is_parsing_root = true;
     $name = "";
 
     $re_keyvalue = '~^("(?P<qkey>(?:\\\\.|[^\\\\"])+)"|(?P<key>[a-z0-9\\-\\_]+))' .
@@ -35,19 +37,36 @@ function vdf_decode($text) {
     $j = count($lines);
     for($i = 0; $i < $j; $i++) {
         $line = trim($lines[$i]);
+        $lineParts = NULL;
 
         // skip empty and comment lines
-        if( $line == "" || $line[0] == '/') { continue; }
+        if ($line == "" || $line[0] == '/') { continue; }
+
+        if (
+            $is_parsing_root && count($lineParts = preg_split('/\s+/', $line, 2, PREG_SPLIT_NO_EMPTY)) > 1
+            && strcasecmp($lineParts[0], "#base") == 0
+        ) {
+            if ($load_base_files) {
+                $base_path = trim($lineParts[1], '"');
+                $aux_arr = vdf_decode(file_get_contents($base_path), false);
+
+                if (!empty($aux_arr)) {
+                    merge_unique_values(reset($aux_arr), $base_arr);
+                }
+            }
+
+            continue;
+        }
 
         // one level deeper
         if( $line[0] == "{" ) {
-            $expect_bracket = false;
+            $expect_bracket = $is_parsing_root = false;
             continue;
         }
 
         if($expect_bracket) {
             trigger_error("vdf_decode: invalid syntax, expected a '}' on line " . ($i+1), E_USER_NOTICE);
-            return Null;
+            return NULL;
         }
 
         // one level back
@@ -93,12 +112,25 @@ function vdf_decode($text) {
         }
     }
 
-    if(count($stack) !== 1)  {
+    if (count($stack) !== 1) {
         trigger_error("vdf_decode: open parentheses somewhere", E_USER_NOTICE);
         return NULL;
+    } else if (!empty($base_arr)) {
+        $groupsArr = &$arr[array_keys($arr)[0]];
+        $groupsArr = array_merge_recursive($base_arr, $groupsArr);
     }
 
     return $arr;
+}
+
+function merge_unique_values($src, &$dest) {
+    foreach ($src as $key => $value) {
+        if (empty($dest[$key])) {
+            $dest[$key] = $value;
+        } else if (is_array($value)) {
+            merge_unique_values($value, $dest[$key]);
+        }
+    }
 }
 
 function vdf_encode($arr, $pretty = false) {
